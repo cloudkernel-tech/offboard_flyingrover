@@ -1,0 +1,10 @@
+# param: value
+waypoints:
+# ENU frame: x, y z, yaw
+# numbers must in x.x format(i.e: 5.0)
+# the last waypoint should be below origin
+- [ 0.0,       -0.0,       10.0,   0.0]
+- [ 5.0,       5.0,        10.0,   0.10]
+- [ -5.0,      5.0,        10.0,   0.20]
+- [ 0.0,       0.0,         10.0,   0.0]
+- [ 0.0,      -0.0,        -100.0,   0.00]
