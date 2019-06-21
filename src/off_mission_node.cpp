@@ -10,6 +10,7 @@
 #include <mavros_msgs/SetMode.h>
 #include <mavros_msgs/State.h>
 #include <mavros_msgs/ExtendedState.h>
+#include <mavros_msgs/RCIn.h>
 
 #include <tf/transform_datatypes.h>
 
@@ -20,7 +21,7 @@ static int current_wpindex = 0;//waypoint index starts from zero
 static mavros_msgs::State current_state;
 static mavros_msgs::ExtendedState current_extendedstate;
 static geometry_msgs::PoseStamped current_local_pos;
-
+static mavros_msgs::RCIn rcinput;
 
 // callbacks for subscriptions
 // vehicle state
@@ -38,6 +39,12 @@ void local_pose_cb(const geometry_msgs::PoseStamped::ConstPtr& msg){
     current_local_pos = *msg;
 }
 
+// rc input
+void rc_input_cb(const mavros_msgs::RCIn::ConstPtr& msg){
+    rcinput = *msg;
+}
+
+
 // init wp list from yaml file
 void initTagetVector(XmlRpc::XmlRpcValue &wp_list);
 
@@ -50,14 +57,16 @@ int main(int argc, char **argv)
     ros::init(argc, argv, "off_mission_node");
     ros::NodeHandle nh;
 
-    //subscriptions and publications
+    //subscriptions, publications and services
     ros::Subscriber state_sub = nh.subscribe<mavros_msgs::State>
             ("mavros/state", 10, state_cb);
 
     ros::Subscriber local_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>
             ("mavros/local_position/pose", 10, local_pose_cb);
-    //ros::Subscriber local_vel_sub  = nh.subscribe("mavros/local_position/velocity", 10, local_vel_cb);
+    //ros::Subscriber local_vel_sub  = nh.subscribe("mavros/local_position/velocity", 10, local_vel_cb);    
 
+    ros::Subscriber rc_input_sub = nh.subscribe<mavros_msgs::RCIn>
+            ("mavros/rc/in", 5, rc_input_cb);
 
     ros::Publisher local_pos_pub = nh.advertise<geometry_msgs::PoseStamped>
             ("mavros/setpoint_position/local", 10);
@@ -102,6 +111,8 @@ int main(int argc, char **argv)
     disarm_cmd.request.value = false;
 
     ros::Time last_request = ros::Time::now();
+
+    bool flag_poweroff_rc_en = false;
 
     while(ros::ok()){
 
@@ -148,7 +159,21 @@ int main(int argc, char **argv)
                     ROS_INFO("Vehicle disarmed");
                 }
                 last_request = ros::Time::now();
+
+                flag_poweroff_rc_en = true;
             }
+
+        }
+
+        //power off by rc aux1 channel (CH7) after landing and disarmed
+        if (flag_poweroff_rc_en)
+        {
+            if (rcinput.channels[6]>1600)
+            {
+                ROS_INFO("Shutdown by Rc");
+                system("shutdown -P now");
+            }
+
 
         }
 
