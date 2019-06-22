@@ -14,6 +14,9 @@
 
 #include <tf/transform_datatypes.h>
 
+//definitions
+#define RC_AUX1_CHANNEL 7
+
 
 //variables
 static std::vector<geometry_msgs::PoseStamped> waypoints;
@@ -168,7 +171,7 @@ int main(int argc, char **argv)
         //power off by rc aux1 channel (CH7) after landing and disarmed
         if (flag_poweroff_rc_en)
         {
-            if (rcinput.channels[6]>1600)
+            if (rcinput.channels[RC_AUX1_CHANNEL - 1]>1600)
             {
                 ROS_INFO("Shutdown by Rc");
                 system("shutdown -P now");
