@@ -17,7 +17,7 @@
 #include <stdlib.h>
 
 //definitions
-#define RC_AUX1_CHANNEL 7
+#define RC_AUX1_CHANNEL 6
 
 //variables
 static std::vector<geometry_msgs::PoseStamped> waypoints;
@@ -169,21 +169,21 @@ int main(int argc, char **argv)
 
         }
 
-        //power off by rc aux1 channel (CH7) after landing and disarmed
-        if (flag_poweroff_rc_en)
-        {
-            if (rcinput.channels.size()>=8 && rcinput.channels.at(RC_AUX1_CHANNEL - 1)>1600)
-            {
-                if (!flag_shutdown_cmd_sent)
-                {
-                    flag_shutdown_cmd_sent = true;
-                    ROS_INFO_ONCE("Shutdown by Rc");
-                    system("/sbin/shutdown -P now");
-                }
-            }
+        //power off by rc aux1 channel (CH6) after landing and disarmed
+        //the power down code can be enabled by users
 
-
-        }
+//        if (flag_poweroff_rc_en)
+//        {
+//            if (rcinput.channels.size()>=8 && rcinput.channels.at(RC_AUX1_CHANNEL - 1)>1600)
+//            {
+//                if (!flag_shutdown_cmd_sent)
+//                {
+//                    flag_shutdown_cmd_sent = true;
+//                    ROS_INFO_ONCE("Shutdown by Rc");
+//                    system("/sbin/shutdown -P now");
+//                }
+//            }
+//        }
 
         ros::spinOnce();
         rate.sleep();
