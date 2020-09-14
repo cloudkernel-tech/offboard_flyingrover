@@ -1,11 +1,13 @@
 <?xml version="1.0"?>
 
 <launch> 
+    <arg name="simulation_flag"  default = "0"/>
+
     <node pkg="off_mission" type="off_mission_node" name="off_mission_node" output="screen">
         <rosparam command="load" file="$(find off_mission)/launch/waypoints_xyzy.yaml"/>
 
         <!--simulation flag param, 1 means in SITL mode-->
-        <param name="simulation_flag" value="0"/>
+        <param name="simulation_flag" type="int" value="$(arg simulation_flag)"/>
 
     </node>
 </launch>
