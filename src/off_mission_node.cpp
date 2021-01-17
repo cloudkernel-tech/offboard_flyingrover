@@ -27,6 +27,12 @@ static mavros_msgs::ExtendedState current_extendedstate;
 static geometry_msgs::PoseStamped current_local_pos;
 static mavros_msgs::RCIn rcinput;
 
+//All in SI units
+static double nav_acc_rad_xy = 0.0f;
+static double nav_acc_rad_z = 0.0f;
+static double nav_acc_yaw = 0.0f;
+static double current_yaw = 0.0f;
+
 // callbacks for subscriptions
 // vehicle state
 void state_cb(const mavros_msgs::State::ConstPtr& msg){
@@ -41,6 +47,8 @@ void extendedstate_cb(const mavros_msgs::ExtendedState::ConstPtr& msg){
 // vehicle local position
 void local_pose_cb(const geometry_msgs::PoseStamped::ConstPtr& msg){
     current_local_pos = *msg;
+
+    current_yaw = tf::getYaw(current_local_pos.pose.orientation);
 }
 
 // rc input
@@ -48,12 +56,13 @@ void rc_input_cb(const mavros_msgs::RCIn::ConstPtr& msg){
     rcinput = *msg;
 }
 
-
 // init wp list from yaml file
 void initTagetVector(XmlRpc::XmlRpcValue &wp_list);
 
 // update current waypoint index
 void updateWaypointIndex();
+
+
 
 int main(int argc, char **argv)
 {
@@ -66,15 +75,16 @@ int main(int argc, char **argv)
 
     ros::Subscriber local_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>
             ("mavros/local_position/pose", 10, local_pose_cb);
-    //ros::Subscriber local_vel_sub  = nh.subscribe("mavros/local_position/velocity", 10, local_vel_cb);    
 
     ros::Subscriber rc_input_sub = nh.subscribe<mavros_msgs::RCIn>
             ("mavros/rc/in", 5, rc_input_cb);
 
     ros::Publisher local_pos_pub = nh.advertise<geometry_msgs::PoseStamped>
             ("mavros/setpoint_position/local", 10);
+
     ros::ServiceClient arming_client = nh.serviceClient<mavros_msgs::CommandBool>
             ("mavros/cmd/arming");
+
     ros::ServiceClient set_mode_client = nh.serviceClient<mavros_msgs::SetMode>
             ("mavros/set_mode");
 
@@ -85,12 +95,17 @@ int main(int argc, char **argv)
     XmlRpc::XmlRpcValue wp_list;
     private_nh.getParam("waypoints",wp_list);
     initTagetVector(wp_list);
-    ROS_INFO("waypoint yaml loaded in main program");
+    ROS_INFO("waypoint yaml loaded!");
 
-    // simulation flag
+    // update parameters
     int simulation_flag = 0;
-    private_nh.param("simulation_flag", simulation_flag, 0);
 
+    private_nh.getParam("simulation_flag", simulation_flag);
+    private_nh.getParam("nav_acc_rad_xy", nav_acc_rad_xy);
+    private_nh.getParam("nav_acc_rad_z", nav_acc_rad_z);
+    private_nh.getParam("nav_acc_yaw_deg", nav_acc_yaw);
+
+    nav_acc_yaw = nav_acc_yaw/180.0f*M_PI;
 
     geometry_msgs::PoseStamped pose; //pose to be passed to fcu
 
@@ -115,8 +130,8 @@ int main(int argc, char **argv)
 
     ros::Time last_request = ros::Time::now();
 
-    bool flag_poweroff_rc_en = false;
-    bool flag_shutdown_cmd_sent = false;
+    bool is_tko_inited_flag = false; //flag to handle takeoff initialization
+    bool is_tko_finished = false; //flag to indicate takeoff is finished
 
     while(ros::ok()){
 
@@ -146,7 +161,48 @@ int main(int argc, char **argv)
 
         }
 
-        pose = waypoints.at(current_wpindex);
+
+        //use yaw measurement during takeoff (relative height<1) to avoid rotation, and use relative pose
+        if (current_wpindex == 0){
+
+            //initialize for the 1st waypoint when offboard is triggered
+            if (!is_tko_inited_flag && current_state.mode=="OFFBOARD"){
+
+                waypoints.at(0).pose.position.x += current_local_pos.pose.position.x; //set with relative position here
+                waypoints.at(0).pose.position.y += current_local_pos.pose.position.y;
+                waypoints.at(0).pose.position.z += current_local_pos.pose.position.z;
+
+                tf::Quaternion q = tf::createQuaternionFromYaw(current_yaw);//set with current yaw measurement
+
+                tf::quaternionTFToMsg(q, waypoints.at(0).pose.orientation);
+
+                is_tko_inited_flag = true;
+            }
+
+            //update yaw setpoint after tko is finished
+            if (is_tko_inited_flag && !is_tko_finished){
+
+                if (current_local_pos.pose.position.z >2.0f){ //reset yaw to wp_list value
+
+                    ROS_INFO("Takeoff finished, reset to waypoint yaw");
+
+                    XmlRpc::XmlRpcValue data_list(wp_list[0]);
+
+                    tf::Quaternion q = tf::createQuaternionFromYaw(data_list[3]);
+                    tf::quaternionTFToMsg(q, waypoints.at(0).pose.orientation);
+
+                    is_tko_finished = true;
+                }
+
+            }
+
+
+            pose = waypoints.at(0);
+        }
+        else
+            pose = waypoints.at(current_wpindex);
+
+
 
         local_pos_pub.publish(pose);
 
@@ -158,32 +214,18 @@ int main(int argc, char **argv)
         {
             if( current_state.armed &&
                 (ros::Time::now() - last_request > ros::Duration(5.0))){
-                if( arming_client.call(disarm_cmd) &&
-                    arm_cmd.response.success){
+
+                if( arming_client.call(disarm_cmd) && arm_cmd.response.success){
+
                     ROS_INFO("Vehicle disarmed");
+                    is_tko_inited_flag = false;
+                    is_tko_finished = false;
                 }
                 last_request = ros::Time::now();
 
-                flag_poweroff_rc_en = true;
             }
 
         }
-
-        //power off by rc aux1 channel (CH6) after landing and disarmed
-        //the power down code can be enabled by users
-
-//        if (flag_poweroff_rc_en)
-//        {
-//            if (rcinput.channels.size()>=8 && rcinput.channels.at(RC_AUX1_CHANNEL - 1)>1600)
-//            {
-//                if (!flag_shutdown_cmd_sent)
-//                {
-//                    flag_shutdown_cmd_sent = true;
-//                    ROS_INFO_ONCE("Shutdown by Rc");
-//                    system("/sbin/shutdown -P now");
-//                }
-//            }
-//        }
 
         ros::spinOnce();
         rate.sleep();
@@ -224,23 +266,37 @@ void initTagetVector(XmlRpc::XmlRpcValue &wp_list)
 
 void updateWaypointIndex()
 {
-    // index will be updated when the position is reached
     float dx = current_local_pos.pose.position.x - waypoints.at(current_wpindex).pose.position.x;
     float dy = current_local_pos.pose.position.y - waypoints.at(current_wpindex).pose.position.y;
     float dz = current_local_pos.pose.position.z - waypoints.at(current_wpindex).pose.position.z;
+    float yaw_sp = tf::getYaw(waypoints.at(current_wpindex).pose.orientation);
 
-    float dist_sq = dx*dx+dy*dy+dz*dz;
+    float dist_xy_sq = dx*dx+dy*dy;
+    float dist_z = fabs(dz);
 
-    if (dist_sq<0.04f)
-    {
-        if (current_wpindex < waypoints.size()-1)
-            current_wpindex++;
-        else
-            ROS_INFO_THROTTLE(2, "The waypoint mission is finished");
+    bool is_position_reached_flag = false;
+    bool is_yaw_reached_flag = false;
+
+    //check position reach condition
+    if (dist_xy_sq<nav_acc_rad_xy*nav_acc_rad_xy && dist_z<nav_acc_rad_z){
+        //ROS_INFO("waypoint position is reached! \n");
+        is_position_reached_flag = true;
+    }
+
+    //check yaw reach condition
+    if (fabs(current_yaw - yaw_sp)<nav_acc_yaw){
+        //ROS_INFO("waypoint yaw is reached! \n");
+        is_yaw_reached_flag = true;
     }
 
     if (current_wpindex == waypoints.size()-1 && current_state.armed)
         ROS_INFO_THROTTLE(2, "Heading for the last waypoint");
 
+    if (is_position_reached_flag && is_yaw_reached_flag){
+        if (current_wpindex < waypoints.size()-1)
+            current_wpindex++;
+        else
+            ROS_INFO_THROTTLE(2, "The waypoint mission is finished");
+    }
 
 }
