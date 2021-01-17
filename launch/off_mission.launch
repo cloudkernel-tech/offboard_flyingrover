@@ -2,12 +2,22 @@
 
 <launch> 
     <arg name="simulation_flag"  default = "0"/>
+    <arg name="nav_acc_rad_xy" default="0.2"/>
+    <arg name="nav_acc_rad_z" default="0.25"/>
+    <arg name="nav_acc_yaw_deg" default ="10.0"/>
 
     <node pkg="off_mission" type="off_mission_node" name="off_mission_node" output="screen">
         <rosparam command="load" file="$(find off_mission)/launch/waypoints_xyzy.yaml"/>
 
         <!--simulation flag param, 1 means in SITL mode-->
         <param name="simulation_flag" type="int" value="$(arg simulation_flag)"/>
+
+        <!-- waypoint reach acceptance radius in horizontal and vertical -->
+        <param name="nav_acc_rad_xy" type="double" value="$(arg nav_acc_rad_xy)"/>
+        <param name="nav_acc_rad_z" type="double" value="$(arg nav_acc_rad_z)"/>
+
+        <!-- waypoint reach acceptance for yaw -->
+        <param name="nav_acc_yaw_deg" type="double" value="$(arg nav_acc_yaw_deg)"/>
 
     </node>
 </launch>
