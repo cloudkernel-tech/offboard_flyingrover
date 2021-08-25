@@ -1,12 +1,14 @@
 /**
  * @file off_mission_node.cpp
- * @brief Offboard control example node, written with MAVROS version 0.19.x, PX4 Pro Flight
- * Stack and tested in Gazebo SITL
+ * @brief This is an offboard control example for flying rover
+ * @author Cloudkernel Technologies (Shenzhen) Co.,Ltd, main page: <https://cloudkernel-tech.github.io/>
+ *
  */
 
 #include <ros/ros.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <mavros_msgs/CommandBool.h>
+#include <mavros_msgs/CommandLong.h>
 #include <mavros_msgs/SetMode.h>
 #include <mavros_msgs/State.h>
 #include <mavros_msgs/ExtendedState.h>
@@ -15,6 +17,7 @@
 #include <tf/transform_datatypes.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <mavconn/mavlink_dialect.h>
 
 //definitions
 #define RC_AUX1_CHANNEL 6
@@ -32,6 +35,12 @@ static double nav_acc_rad_xy = 0.0f;
 static double nav_acc_rad_z = 0.0f;
 static double nav_acc_yaw = 0.0f;
 static double current_yaw = 0.0f;
+
+static bool _flag_last_wp_reached = false; //flag to indicate last wp is reached
+
+enum class FLYINGROVER_MODE {ROVER, MULTICOPTER};
+
+static FLYINGROVER_MODE _flyingrover_mode = FLYINGROVER_MODE::ROVER; //flying rover mode
 
 // callbacks for subscriptions
 // vehicle state
@@ -62,31 +71,41 @@ void initTagetVector(XmlRpc::XmlRpcValue &wp_list);
 // update current waypoint index
 void updateWaypointIndex();
 
-
-
 int main(int argc, char **argv)
 {
     ros::init(argc, argv, "off_mission_node");
     ros::NodeHandle nh;
 
-    //subscriptions, publications and services
+    /*subscriptions, publications and services*/
     ros::Subscriber state_sub = nh.subscribe<mavros_msgs::State>
-            ("mavros/state", 10, state_cb);
+            ("mavros/state", 5, state_cb);
 
+    //subscription for flying rover state
+    ros::Subscriber extended_state_sub = nh.subscribe<mavros_msgs::ExtendedState>
+            ("mavros/extended_state", 2, extendedstate_cb);
+
+    //subscription for local position
     ros::Subscriber local_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>
-            ("mavros/local_position/pose", 10, local_pose_cb);
+            ("mavros/local_position/pose", 5, local_pose_cb);
 
     ros::Subscriber rc_input_sub = nh.subscribe<mavros_msgs::RCIn>
             ("mavros/rc/in", 5, rc_input_cb);
 
+    //publication for local position setpoint
     ros::Publisher local_pos_pub = nh.advertise<geometry_msgs::PoseStamped>
-            ("mavros/setpoint_position/local", 10);
+            ("mavros/setpoint_position/local", 5);
 
+    //service for arm/disarm
     ros::ServiceClient arming_client = nh.serviceClient<mavros_msgs::CommandBool>
             ("mavros/cmd/arming");
 
+    //service for main mode setting
     ros::ServiceClient set_mode_client = nh.serviceClient<mavros_msgs::SetMode>
             ("mavros/set_mode");
+
+    //service for command send
+    ros::ServiceClient command_long_client = nh.serviceClient<mavros_msgs::CommandLong>
+            ("mavros/cmd/command");
 
     /* param loading*/
     ros::NodeHandle private_nh("~");
@@ -119,6 +138,7 @@ int main(int argc, char **argv)
     }
 
 
+    /*service commands*/
     mavros_msgs::SetMode offb_set_mode;
     offb_set_mode.request.custom_mode = "OFFBOARD";
 
@@ -128,10 +148,22 @@ int main(int argc, char **argv)
     mavros_msgs::CommandBool disarm_cmd;
     disarm_cmd.request.value = false;
 
+    //flying rover mode switching commands
+    mavros_msgs::CommandLong switch_to_mc_cmd;//command to switch to multicopter
+    switch_to_mc_cmd.request.command = (uint16_t)mavlink::common::MAV_CMD::DO_FLYINGROVER_TRANSITION;
+    switch_to_mc_cmd.request.confirmation = 0;
+    switch_to_mc_cmd.request.param1 = (float)mavlink::common::MAV_FLYINGROVER_STATE::MC;
+
+    mavros_msgs::CommandLong switch_to_rover_cmd;//command to switch to rover
+    switch_to_rover_cmd.request.command = (uint16_t)mavlink::common::MAV_CMD::DO_FLYINGROVER_TRANSITION;
+    switch_to_rover_cmd.request.confirmation = 0;
+    switch_to_rover_cmd.request.param1 = (float)mavlink::common::MAV_FLYINGROVER_STATE::ROVER;
+
     ros::Time last_request = ros::Time::now();
 
     bool is_tko_inited_flag = false; //flag to handle takeoff initialization
     bool is_tko_finished = false; //flag to indicate takeoff is finished
+
 
     while(ros::ok()){
 
@@ -162,38 +194,51 @@ int main(int argc, char **argv)
         }
 
 
-        //use yaw measurement during takeoff (relative height<1) to avoid rotation, and use relative pose
         if (current_wpindex == 0){
 
-            //initialize for the 1st waypoint when offboard is triggered
-            if (!is_tko_inited_flag && current_state.mode=="OFFBOARD"){
+            //use yaw measurement during multicopter takeoff (relative height<1) to avoid rotation, and use relative pose
+            if (_flyingrover_mode == FLYINGROVER_MODE::MULTICOPTER){
 
+                //initialize for the 1st waypoint when offboard is triggered
+                if (!is_tko_inited_flag && current_state.mode=="OFFBOARD"){
+
+                    //reload waypoint from yaml
+                    initTagetVector(wp_list);
+
+                    waypoints.at(0).pose.position.x += current_local_pos.pose.position.x; //set with relative position here
+                    waypoints.at(0).pose.position.y += current_local_pos.pose.position.y;
+                    waypoints.at(0).pose.position.z += current_local_pos.pose.position.z;
+
+                    tf::Quaternion q = tf::createQuaternionFromYaw(current_yaw);//set with current yaw measurement
+
+                    tf::quaternionTFToMsg(q, waypoints.at(0).pose.orientation);
+
+                    is_tko_inited_flag = true;
+                }
+
+                //update yaw setpoint after tko is finished
+                if (is_tko_inited_flag && !is_tko_finished){
+
+                    if (current_local_pos.pose.position.z >2.0f){ //reset yaw to wp_list value
+
+                        ROS_INFO("Takeoff finished, reset to waypoint yaw");
+
+                        XmlRpc::XmlRpcValue data_list(wp_list[0]);
+
+                        tf::Quaternion q = tf::createQuaternionFromYaw(data_list[3]);
+                        tf::quaternionTFToMsg(q, waypoints.at(0).pose.orientation);
+
+                        is_tko_finished = true;
+                    }
+
+                }
+
+            }
+            else //rover mode, pass relative update, use loaded waypoints
+            {
                 waypoints.at(0).pose.position.x += current_local_pos.pose.position.x; //set with relative position here
                 waypoints.at(0).pose.position.y += current_local_pos.pose.position.y;
                 waypoints.at(0).pose.position.z += current_local_pos.pose.position.z;
-
-                tf::Quaternion q = tf::createQuaternionFromYaw(current_yaw);//set with current yaw measurement
-
-                tf::quaternionTFToMsg(q, waypoints.at(0).pose.orientation);
-
-                is_tko_inited_flag = true;
-            }
-
-            //update yaw setpoint after tko is finished
-            if (is_tko_inited_flag && !is_tko_finished){
-
-                if (current_local_pos.pose.position.z >2.0f){ //reset yaw to wp_list value
-
-                    ROS_INFO("Takeoff finished, reset to waypoint yaw");
-
-                    XmlRpc::XmlRpcValue data_list(wp_list[0]);
-
-                    tf::Quaternion q = tf::createQuaternionFromYaw(data_list[3]);
-                    tf::quaternionTFToMsg(q, waypoints.at(0).pose.orientation);
-
-                    is_tko_finished = true;
-                }
-
             }
 
 
@@ -203,26 +248,53 @@ int main(int argc, char **argv)
             pose = waypoints.at(current_wpindex);
 
 
-
         local_pos_pub.publish(pose);
 
         updateWaypointIndex();
 
-        //disarm when landed and the vehicle is heading for the last waypoint
-        if (current_wpindex == waypoints.size()-1
-                && current_extendedstate.landed_state == mavros_msgs::ExtendedState::LANDED_STATE_LANDING)
-        {
-            if( current_state.armed &&
-                (ros::Time::now() - last_request > ros::Duration(5.0))){
+        /*mode switching or disarm after last waypoint*/
+        if (current_wpindex == waypoints.size()-1 && _flag_last_wp_reached){
 
-                if( arming_client.call(disarm_cmd) && arm_cmd.response.success){
+            if (_flyingrover_mode == FLYINGROVER_MODE::ROVER){
 
-                    ROS_INFO("Vehicle disarmed");
-                    is_tko_inited_flag = false;
-                    is_tko_finished = false;
+                //request to switch to multicopter mode
+                if( current_extendedstate.flyingrover_state== mavros_msgs::ExtendedState::FLYINGROVER_STATE_ROVER &&
+                    (ros::Time::now() - last_request > ros::Duration(5.0))){
+
+                    if( command_long_client.call(switch_to_mc_cmd) && switch_to_mc_cmd.response.success){
+
+                        ROS_INFO("Flyingrover multicopter mode cmd activated");
+
+                        //update mode for next round
+                        _flyingrover_mode = FLYINGROVER_MODE::MULTICOPTER;
+                        current_wpindex = 0;
+                        _flag_last_wp_reached = false;
+
+                    }
+                    last_request = ros::Time::now();
+
                 }
-                last_request = ros::Time::now();
 
+            }
+            else if (_flyingrover_mode == FLYINGROVER_MODE::MULTICOPTER){
+
+                //disarm when landed and the vehicle is heading for the last waypoint
+                if (current_extendedstate.landed_state == mavros_msgs::ExtendedState::LANDED_STATE_LANDING){
+
+                    if( current_state.armed &&
+                        (ros::Time::now() - last_request > ros::Duration(5.0))){
+
+                        if( arming_client.call(disarm_cmd) && arm_cmd.response.success){
+
+                            ROS_INFO("Vehicle disarmed");
+                            is_tko_inited_flag = false;
+                            is_tko_finished = false;
+                        }
+                        last_request = ros::Time::now();
+
+                    }
+
+                }
             }
 
         }
@@ -283,11 +355,16 @@ void updateWaypointIndex()
         is_position_reached_flag = true;
     }
 
-    //check yaw reach condition
-    if (fabs(current_yaw - yaw_sp)<nav_acc_yaw){
-        //ROS_INFO("waypoint yaw is reached! \n");
-        is_yaw_reached_flag = true;
+    //check yaw reach condition for multicopter only
+    if (_flyingrover_mode == FLYINGROVER_MODE::MULTICOPTER){
+        if (fabs(current_yaw - yaw_sp)<nav_acc_yaw){
+            //ROS_INFO("waypoint yaw is reached! \n");
+            is_yaw_reached_flag = true;
+        }
     }
+    else
+        is_yaw_reached_flag = true;
+
 
     if (current_wpindex == waypoints.size()-1 && current_state.armed)
         ROS_INFO_THROTTLE(2, "Heading for the last waypoint");
@@ -295,8 +372,11 @@ void updateWaypointIndex()
     if (is_position_reached_flag && is_yaw_reached_flag){
         if (current_wpindex < waypoints.size()-1)
             current_wpindex++;
-        else
+        else{
+            _flag_last_wp_reached = true;
+
             ROS_INFO_THROTTLE(2, "The waypoint mission is finished");
+        }
     }
 
 }
