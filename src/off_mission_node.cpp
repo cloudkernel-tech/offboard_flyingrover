@@ -350,9 +350,16 @@ void updateWaypointIndex()
     bool is_yaw_reached_flag = false;
 
     //check position reach condition
-    if (dist_xy_sq<nav_acc_rad_xy*nav_acc_rad_xy && dist_z<nav_acc_rad_z){
-        //ROS_INFO("waypoint position is reached! \n");
-        is_position_reached_flag = true;
+    if (_flyingrover_mode == FLYINGROVER_MODE::MULTICOPTER){
+        if (dist_xy_sq<nav_acc_rad_xy*nav_acc_rad_xy && dist_z<nav_acc_rad_z){
+            //ROS_INFO("waypoint position is reached! \n");
+            is_position_reached_flag = true;
+        }
+    }
+    else if (_flyingrover_mode == FLYINGROVER_MODE::ROVER){ //check only horizontal distance for rover
+        if (dist_xy_sq<nav_acc_rad_xy*nav_acc_rad_xy){
+            is_position_reached_flag = true;
+        }
     }
 
     //check yaw reach condition for multicopter only
@@ -362,9 +369,9 @@ void updateWaypointIndex()
             is_yaw_reached_flag = true;
         }
     }
-    else
+    else if (_flyingrover_mode == FLYINGROVER_MODE::ROVER){ //we don't check yaw for rover
         is_yaw_reached_flag = true;
-
+    }
 
     if (current_wpindex == waypoints.size()-1 && current_state.armed)
         ROS_INFO_THROTTLE(2, "Heading for the last waypoint");
