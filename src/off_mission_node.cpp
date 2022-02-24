@@ -176,6 +176,8 @@ int main(int argc, char **argv)
     set_backward_driving_cmd.request.confirmation = 0;
     set_backward_driving_cmd.request.param1 = 0.0f;
 
+    bool flag_forward_driving = true;
+
     ros::Time last_request = ros::Time::now();
 
 
@@ -298,8 +300,30 @@ int main(int argc, char **argv)
 
                 act_controls_pub.publish(act_control);
 
+                //we switch to backward driving after 5s
+                if ( ros::Time::now() - _phase_entry_timestamp > ros::Duration(5.0)){
+
+                    if (flag_forward_driving && (ros::Time::now() - last_request > ros::Duration(1.0))){
+
+                        if( command_long_client.call(set_backward_driving_cmd) && set_backward_driving_cmd.response.success){
+
+                            ROS_INFO("Flyingrover multicopter mode cmd activated");
+
+                            flag_forward_driving = false;
+
+                        }
+
+                        last_request = ros::Time::now();
+
+                    }
+
+
+                }
+
+
+
                 //phase transition after a certain time
-                if ( ros::Time::now() - _phase_entry_timestamp > ros::Duration(6.0)){
+                if ( ros::Time::now() - _phase_entry_timestamp > ros::Duration(10.0)){
                     _flag_mission_completed = true;
                     ROS_INFO("Mission completed");
                 }
