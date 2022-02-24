@@ -2,7 +2,7 @@
 <package format="2">
   <name>off_mission</name>
   <version>0.0.0</version>
-  <description>Offboard control pkg based on pixhawk firmware V1.9.0
+  <description>Offboard control pkg for Kerloud product series
 </description>
 
   <!-- One maintainer tag required, multiple allowed, one person per tag -->

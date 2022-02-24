@@ -12,9 +12,8 @@
         <!--simulation flag param, 1 means in SITL mode-->
         <param name="simulation_flag" type="int" value="$(arg simulation_flag)"/>
 
-        <!-- waypoint reach acceptance radius in horizontal and vertical -->
+        <!-- waypoint reach acceptance radius in horizontal plane -->
         <param name="nav_acc_rad_xy" type="double" value="$(arg nav_acc_rad_xy)"/>
-        <param name="nav_acc_rad_z" type="double" value="$(arg nav_acc_rad_z)"/>
 
         <!-- waypoint reach acceptance for yaw -->
         <param name="nav_acc_yaw_deg" type="double" value="$(arg nav_acc_yaw_deg)"/>
