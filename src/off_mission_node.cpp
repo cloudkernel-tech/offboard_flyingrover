@@ -16,6 +16,7 @@
 #include <mavros_msgs/CommandLong.h>
 #include <mavros_msgs/SetMode.h>
 #include <mavros_msgs/State.h>
+#include <mavros_msgs/Thrust.h>
 #include <mavros_msgs/ExtendedState.h>
 #include <mavros_msgs/RCIn.h>
 
@@ -39,11 +40,15 @@ static double nav_acc_yaw = 0.0f;
 static double current_yaw = 0.0f;
 
 static bool _flag_last_wp_reached = false; //flag to indicate last wp is reached in position phase
+static bool _flag_mission_completed = false; //flag to indicate that the mission is completed
+
+static ros::Time _phase_entry_timestamp; //entry timestamp of a mission phase
 
 //mission phases
 enum class ROVER_MISSION_PHASE {POS_PHASE, VEL_PHASE, ATTITUDE_PHASE, ACT_CONTROL_PHASE};
 
 static ROVER_MISSION_PHASE _mission_phase=ROVER_MISSION_PHASE::POS_PHASE;
+
 
 // callbacks for subscriptions
 // vehicle state
@@ -98,9 +103,13 @@ int main(int argc, char **argv)
     ros::Publisher local_vel_pub = nh.advertise<geometry_msgs::Twist>
             ("mavros/setpoint_velocity/cmd_vel", 5);
 
-    //publication for attitude setpoint
+    //publication for attitude setpoint (attitutde & thrust)
     ros::Publisher att_sp_pub = nh.advertise<geometry_msgs::PoseStamped>
             ("mavros/setpoint_attitude/attitude", 5);
+
+    ros::Publisher thrust_sp_pub = nh.advertise<geometry_msgs::PoseStamped>
+            ("mavros/setpoint_attitude/thrust", 5);
+
 
     //publication for direct actuator outputs
     ros::Publisher act_controls_pub = nh.advertise<mavros_msgs::ActuatorControl>
@@ -135,8 +144,6 @@ int main(int argc, char **argv)
     private_nh.getParam("nav_acc_yaw_deg", nav_acc_yaw);
 
     nav_acc_yaw = nav_acc_yaw/180.0f*M_PI;
-
-    geometry_msgs::PoseStamped pose; //pose to be passed to fcu
 
     //the setpoint publishing rate MUST be faster than 2Hz
     ros::Rate rate(20.0);
@@ -201,12 +208,16 @@ int main(int argc, char **argv)
         }
 
 
+        if (!_flag_mission_completed){
+
         switch (_mission_phase){
 
         /* publish local position setpoint for rover maneuvering*/
             case ROVER_MISSION_PHASE::POS_PHASE:{
 
                     ROS_INFO_ONCE("Starting position guidance phase");
+
+                    geometry_msgs::PoseStamped pose; //pose to be passed to fcu
 
                     if (current_wpindex == 0){
                         waypoints.at(0).pose.position.x += current_local_pos.pose.position.x; //set with relative position here
@@ -222,39 +233,88 @@ int main(int argc, char **argv)
                     updateWaypointIndex();
 
                 break;
-                }
+            }
 
          /* publish local velocity setpoint for rover maneuvering*/
-            case ROVER_MISSION_PHASE::VEL_PHASE:
+        case ROVER_MISSION_PHASE::VEL_PHASE:{
+
                 ROS_INFO_ONCE("Starting velocity guidance phase");
 
+                //The locl velocity setpoint is defined in the ENU frame, and will be converted to body frame in the autopilot for maneuvering
+                geometry_msgs::Twist  vel_cmd;
+                vel_cmd.linear.x = 0.25f;
+                vel_cmd.linear.y = 0.25f;
+                vel_cmd.linear.z = 0.0f;
+
+                local_vel_pub.publish(vel_cmd);
+
+                //phase transition after a certain time
+                if ( ros::Time::now() - _phase_entry_timestamp > ros::Duration(6.0)){
+                    _mission_phase = ROVER_MISSION_PHASE::ATTITUDE_PHASE;
+                    _phase_entry_timestamp = ros::Time::now();
+                }
 
                 break;
 
-
+        }
 
          /* publish attitude setpoint for rover maneuvering*/
-            case ROVER_MISSION_PHASE::ATTITUDE_PHASE:
+        case ROVER_MISSION_PHASE::ATTITUDE_PHASE:{
                 ROS_INFO_ONCE("Starting attitude maneuvering phase");
 
+                //we need to construct both attitude and thrust setpoints
+                //we construct desired attitude from yaw setpoint
+                geometry_msgs::PoseStamped pose;
+
+                tf::Quaternion q = tf::createQuaternionFromYaw(M_PI/2.0f); //yaw unit: radius
+
+                tf::quaternionTFToMsg(q, pose.pose.orientation);
+
+                att_sp_pub.publish(pose);
+
+                mavros_msgs::Thrust thrust_sp;
+                thrust_sp.thrust = 0.3f;
+                thrust_sp_pub.publish(thrust_sp);
+
+                //phase transition after a certain time
+                if ( ros::Time::now() - _phase_entry_timestamp > ros::Duration(6.0)){
+                    _mission_phase = ROVER_MISSION_PHASE::ACT_CONTROL_PHASE;
+                    _phase_entry_timestamp = ros::Time::now();
+                }
+
             break;
+        }
 
          /* publish direct actuator control for rover maneuvering*/
-            case ROVER_MISSION_PHASE::ACT_CONTROL_PHASE:
+        case ROVER_MISSION_PHASE::ACT_CONTROL_PHASE:{
                 ROS_INFO_ONCE("Starting direct actuator control phase");
 
+                mavros_msgs::ActuatorControl act_control;
+
+                act_control.group_mix = 0;
+                act_control.flag_rover_mode = 1;//enable direct actuator control in rover
+                act_control.controls[mavros_msgs::ActuatorControl::ROVER_YAW_CHANNEL_CONTROL_INDEX] = 0.4f;
+                act_control.controls[mavros_msgs::ActuatorControl::ROVER_THROTTLE_CHANNEL_CONTROL_INDEX] = 0.3f;
+
+                act_controls_pub.publish(act_control);
+
+                //phase transition after a certain time
+                if ( ros::Time::now() - _phase_entry_timestamp > ros::Duration(6.0)){
+                    _flag_mission_completed = true;
+                    ROS_INFO("Mission completed");
+                }
+
+            break;
+        }
 
 
+      default:
 
+            ROS_INFO("Unsupported mission phases");
             break;
 
 
-            default:
-
-                ROS_INFO("Unsupported mission phases");
-
-            break;
-
+        }
 
         }
 
@@ -263,13 +323,8 @@ int main(int argc, char **argv)
 
 
 
-
-
-
-
-        /*mode switching or disarm after last waypoint*/
-        //disarm when landed and the vehicle is heading for the last waypoint
-        if (current_extendedstate.landed_state == mavros_msgs::ExtendedState::LANDED_STATE_LANDING){
+        /*disarm when the mission is completed*/
+        if (_flag_mission_completed){
 
             if( current_state.armed &&
                 (ros::Time::now() - last_request > ros::Duration(5.0))){
@@ -349,6 +404,8 @@ void updateWaypointIndex()
             _flag_last_wp_reached = true;
 
             _mission_phase = ROVER_MISSION_PHASE::VEL_PHASE;
+
+            _phase_entry_timestamp = ros::Time::now();
             ROS_INFO("The waypoint mission in POS_PHASE is finished, switch to VEL_PHASE");
         }
 
