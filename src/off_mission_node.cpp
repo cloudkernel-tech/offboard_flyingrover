@@ -107,7 +107,7 @@ int main(int argc, char **argv)
     ros::Publisher att_sp_pub = nh.advertise<geometry_msgs::PoseStamped>
             ("mavros/setpoint_attitude/attitude", 5);
 
-    ros::Publisher thrust_sp_pub = nh.advertise<geometry_msgs::PoseStamped>
+    ros::Publisher thrust_sp_pub = nh.advertise<mavros_msgs::Thrust>
             ("mavros/setpoint_attitude/thrust", 5);
 
 
