@@ -307,7 +307,7 @@ int main(int argc, char **argv)
 
                         if( command_long_client.call(set_backward_driving_cmd) && set_backward_driving_cmd.response.success){
 
-                            ROS_INFO("Flyingrover multicopter mode cmd activated");
+                            ROS_INFO("Driving direction command is sent!");
 
                             flag_forward_driving = false;
 
