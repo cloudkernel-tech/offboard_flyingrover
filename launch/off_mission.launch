@@ -2,7 +2,7 @@
 
 <launch> 
     <arg name="simulation_flag"  default = "0"/>
-    <arg name="nav_acc_rad_xy" default="0.2"/>
+    <arg name="nav_acc_rad_xy" default="0.25"/>
     <arg name="nav_acc_rad_z" default="0.25"/>
     <arg name="nav_acc_yaw_deg" default ="10.0"/>
 

@@ -239,9 +239,12 @@ int main(int argc, char **argv)
 
                 //The locl velocity setpoint is defined in the ENU frame, and will be converted to body frame in the autopilot for maneuvering
                 geometry_msgs::TwistStamped  vel_cmd;
-                vel_cmd.twist.linear.x = 0.25f;
-                vel_cmd.twist.linear.y = 0.25f;
+                vel_cmd.twist.linear.x = 0.5f;
+                vel_cmd.twist.linear.y = 0.5f;
                 vel_cmd.twist.linear.z = 0.0f;
+
+                ROS_INFO_THROTTLE(1.5f, "Rover: track velocity setpoint %5.3f, %5.3f, %5.3f \n",(double)vel_cmd.twist.linear.x, (double)vel_cmd.twist.linear.y,
+                                  (double)vel_cmd.twist.linear.z);
 
                 local_vel_pub.publish(vel_cmd);
 
@@ -263,7 +266,8 @@ int main(int argc, char **argv)
                 //we construct desired attitude from yaw setpoint
                 geometry_msgs::PoseStamped pose;
 
-                tf::Quaternion q = tf::createQuaternionFromYaw(M_PI/2.0f); //yaw unit: radius
+                float yaw_sp = M_PI/2.0f;
+                tf::Quaternion q = tf::createQuaternionFromYaw(yaw_sp); //yaw unit: radius
 
                 tf::quaternionTFToMsg(q, pose.pose.orientation);
 
@@ -272,6 +276,8 @@ int main(int argc, char **argv)
                 mavros_msgs::Thrust thrust_sp;
                 thrust_sp.thrust = 0.3f;
                 thrust_sp_pub.publish(thrust_sp);
+
+                ROS_INFO_THROTTLE(1.5f, "Rover: go for attitude yaw %5.3f, throttle %5.3f \n",(double)yaw_sp, (double)thrust_sp.thrust);
 
                 //phase transition after a certain time
                 if ( ros::Time::now() - _phase_entry_timestamp > ros::Duration(6.0)){
@@ -294,6 +300,11 @@ int main(int argc, char **argv)
                 act_control.controls[mavros_msgs::ActuatorControl::ROVER_THROTTLE_CHANNEL_CONTROL_INDEX] = 0.3f;
 
                 act_controls_pub.publish(act_control);
+
+                ROS_INFO_THROTTLE(1.5f, "Rover: direct actuator control with steering servo %5.3f, throttle %5.3f  \n",
+                                  (double)act_control.controls[mavros_msgs::ActuatorControl::ROVER_YAW_CHANNEL_CONTROL_INDEX],
+                        (double)act_control.controls[mavros_msgs::ActuatorControl::ROVER_THROTTLE_CHANNEL_CONTROL_INDEX]);
+
 
                 //we switch to backward driving after 5s
                 if ( ros::Time::now() - _phase_entry_timestamp > ros::Duration(5.0)){
@@ -418,7 +429,10 @@ void updateWaypointIndex()
     if (is_position_reached_flag && is_yaw_reached_flag){
 
         if (current_wpindex < waypoints.size()-1)
+        {
+            ROS_INFO_ONCE("waypoint reached, advance to next!");
             current_wpindex++;
+        }
         else{
             _flag_last_wp_reached = true;
 
