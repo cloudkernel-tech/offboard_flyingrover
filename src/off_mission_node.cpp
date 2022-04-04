@@ -221,15 +221,10 @@ int main(int argc, char **argv)
 
                     geometry_msgs::PoseStamped pose; //pose to be passed to fcu
 
-                    if (current_wpindex == 0){
-                        waypoints.at(0).pose.position.x += current_local_pos.pose.position.x; //set with relative position here
-                        waypoints.at(0).pose.position.y += current_local_pos.pose.position.y;
-                        waypoints.at(0).pose.position.z += current_local_pos.pose.position.z;
+                    pose = waypoints.at(current_wpindex);
 
-                        pose = waypoints.at(0);
-                    }
-                    else
-                        pose = waypoints.at(current_wpindex);
+                    ROS_INFO_THROTTLE(1.5f, "Rover: go to position %5.3f, %5.3f, %5.3f \n",(double)pose.pose.position.x, (double)pose.pose.position.y,
+                                      (double)pose.pose.position.z);
 
                     local_pos_pub.publish(pose);
                     updateWaypointIndex();
