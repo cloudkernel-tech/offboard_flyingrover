@@ -9,7 +9,7 @@
 
 #include <ros/ros.h>
 #include <geometry_msgs/PoseStamped.h>
-#include <geometry_msgs/Twist.h>
+#include <geometry_msgs/TwistStamped.h>
 
 #include <mavros_msgs/ActuatorControl.h>
 #include <mavros_msgs/CommandBool.h>
@@ -100,7 +100,7 @@ int main(int argc, char **argv)
             ("mavros/setpoint_position/local", 5);
 
     //publication for local velocity setpoint
-    ros::Publisher local_vel_pub = nh.advertise<geometry_msgs::Twist>
+    ros::Publisher local_vel_pub = nh.advertise<geometry_msgs::TwistStamped>
             ("mavros/setpoint_velocity/cmd_vel", 5);
 
     //publication for attitude setpoint (attitutde & thrust)
@@ -189,7 +189,7 @@ int main(int argc, char **argv)
             {
                 //set offboard mode, then arm the vehicle
                 if( current_state.mode != "OFFBOARD" &&
-                    (ros::Time::now() - last_request > ros::Duration(5.0))){
+                    (ros::Time::now() - last_request > ros::Duration(1.0))){
                     if( set_mode_client.call(offb_set_mode) &&
                         offb_set_mode.response.mode_sent){
                         ROS_INFO("Offboard mode enabled");
@@ -197,7 +197,7 @@ int main(int argc, char **argv)
                     last_request = ros::Time::now();
                 } else {
                     if( !current_state.armed &&
-                        (ros::Time::now() - last_request > ros::Duration(5.0))){
+                        (ros::Time::now() - last_request > ros::Duration(1.0))){
                         if( arming_client.call(arm_cmd) &&
                             arm_cmd.response.success){
                             ROS_INFO("Vehicle armed");
@@ -243,10 +243,10 @@ int main(int argc, char **argv)
                 ROS_INFO_ONCE("Starting velocity guidance phase");
 
                 //The locl velocity setpoint is defined in the ENU frame, and will be converted to body frame in the autopilot for maneuvering
-                geometry_msgs::Twist  vel_cmd;
-                vel_cmd.linear.x = 0.25f;
-                vel_cmd.linear.y = 0.25f;
-                vel_cmd.linear.z = 0.0f;
+                geometry_msgs::TwistStamped  vel_cmd;
+                vel_cmd.twist.linear.x = 0.25f;
+                vel_cmd.twist.linear.y = 0.25f;
+                vel_cmd.twist.linear.z = 0.0f;
 
                 local_vel_pub.publish(vel_cmd);
 
