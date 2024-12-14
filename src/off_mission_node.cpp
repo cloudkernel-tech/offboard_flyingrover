@@ -1,9 +1,9 @@
 /**
  * @file off_mission_node.cpp
- * @brief This is an offboard control example for Kerloud Auto Car
- * More information can be referred in: https://kerloud-autocar.readthedocs.io
+ * @brief This is an offboard control example for Pursuit autopilot
+ * More information can be referred in: https://cloudkernel.cn/pursuit
  *
- * @author Cloudkernel Technologies (Shenzhen) Co.,Ltd, main page: <https://cloudkernel-tech.github.io/>
+ * @author Cloudkernel Technologies (Shenzhen) Co.,Ltd, main page: https://cloudkernel.cn
  *
  */
 
@@ -11,14 +11,12 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/TwistStamped.h>
 
-#include <mavros_msgs/ActuatorControl.h>
 #include <mavros_msgs/CommandBool.h>
 #include <mavros_msgs/CommandLong.h>
 #include <mavros_msgs/SetMode.h>
 #include <mavros_msgs/State.h>
-#include <mavros_msgs/Thrust.h>
-#include <mavros_msgs/ExtendedState.h>
-#include <mavros_msgs/RCIn.h>
+
+#include <pursuit_msgs/VcuBaseStatus.h>
 
 #include <tf/transform_datatypes.h>
 #include <stdio.h>
@@ -29,14 +27,11 @@
 static std::vector<geometry_msgs::PoseStamped> waypoints;
 static int current_wpindex = 0;//waypoint index starts from zero
 static mavros_msgs::State current_state;
-static mavros_msgs::ExtendedState current_extendedstate;
 static geometry_msgs::PoseStamped current_local_pos;
-static mavros_msgs::RCIn rcinput;
+static pursuit_msgs::VcuBaseStatus vcu_base_status;
 
 //All in SI units
 static double nav_acc_rad_xy = 0.0f;
-static double nav_acc_rad_z = 0.0f;
-static double nav_acc_yaw = 0.0f;
 static double current_yaw = 0.0f;
 
 static bool _flag_last_wp_reached = false; //flag to indicate last wp is reached in position phase
@@ -45,20 +40,15 @@ static bool _flag_mission_completed = false; //flag to indicate that the mission
 static ros::Time _phase_entry_timestamp; //entry timestamp of a mission phase
 
 //mission phases
-enum class ROVER_MISSION_PHASE {POS_PHASE, VEL_PHASE, ATTITUDE_PHASE, ACT_CONTROL_PHASE};
+enum class ROVER_MISSION_PHASE {POS_PHASE, TWIST_CONTROL_PHASE};
 
-static ROVER_MISSION_PHASE _mission_phase=ROVER_MISSION_PHASE::POS_PHASE;
+static ROVER_MISSION_PHASE _mission_phase = ROVER_MISSION_PHASE::POS_PHASE;
 
 
 // callbacks for subscriptions
 // vehicle state
 void state_cb(const mavros_msgs::State::ConstPtr& msg){
     current_state = *msg;
-}
-
-// extended state
-void extendedstate_cb(const mavros_msgs::ExtendedState::ConstPtr& msg){
-    current_extendedstate = *msg;
 }
 
 // vehicle local position
@@ -68,9 +58,9 @@ void local_pose_cb(const geometry_msgs::PoseStamped::ConstPtr& msg){
     current_yaw = tf::getYaw(current_local_pos.pose.orientation);
 }
 
-// rc input
-void rc_input_cb(const mavros_msgs::RCIn::ConstPtr& msg){
-    rcinput = *msg;
+//vcu base status
+void vcu_base_status_cb(const pursuit_msgs::VcuBaseStatus::ConstPtr& msg){
+    vcu_base_status = *msg;
 }
 
 // init wp list from yaml file
@@ -92,28 +82,16 @@ int main(int argc, char **argv)
     ros::Subscriber local_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>
             ("mavros/local_position/pose", 5, local_pose_cb);
 
-    ros::Subscriber rc_input_sub = nh.subscribe<mavros_msgs::RCIn>
-            ("mavros/rc/in", 5, rc_input_cb);
+    ros::Subscriber vcu_base_status_sub = nh.subscribe<pursuit_msgs::VcuBaseStatus>
+            ("mavros/vcu_base_status/output", 5, vcu_base_status_cb);
+
 
     //publication for local position setpoint
-    ros::Publisher local_pos_pub = nh.advertise<geometry_msgs::PoseStamped>
+    ros::Publisher local_pos_sp_pub = nh.advertise<geometry_msgs::PoseStamped>
             ("mavros/setpoint_position/local", 5);
 
-    //publication for local velocity setpoint
-    ros::Publisher local_vel_pub = nh.advertise<geometry_msgs::TwistStamped>
-            ("mavros/setpoint_velocity/cmd_vel", 5);
-
-    //publication for attitude setpoint (attitutde & thrust)
-    ros::Publisher att_sp_pub = nh.advertise<geometry_msgs::PoseStamped>
-            ("mavros/setpoint_attitude/attitude", 5);
-
-    ros::Publisher thrust_sp_pub = nh.advertise<mavros_msgs::Thrust>
-            ("mavros/setpoint_attitude/thrust", 5);
-
-
-    //publication for direct actuator outputs
-    ros::Publisher act_controls_pub = nh.advertise<mavros_msgs::ActuatorControl>
-            ("mavros/actuator_control", 5);
+    ros::Publisher nav_vel_cmd_pub = nh.advertise<geometry_msgs::Twist>
+            ("mavros/vcu_command_velocity/from_nav", 5);
 
     //service for arm/disarm
     ros::ServiceClient arming_client = nh.serviceClient<mavros_msgs::CommandBool>
@@ -123,9 +101,9 @@ int main(int argc, char **argv)
     ros::ServiceClient set_mode_client = nh.serviceClient<mavros_msgs::SetMode>
             ("mavros/set_mode");
 
-    //service for command send
-    ros::ServiceClient command_long_client = nh.serviceClient<mavros_msgs::CommandLong>
-            ("mavros/cmd/command");
+
+    ROS_INFO("Starting offboard control for Pursuit autopilot demonstration...");
+    ros::Duration(1.0).sleep();
 
     /* param loading*/
     ros::NodeHandle private_nh("~");
@@ -141,9 +119,6 @@ int main(int argc, char **argv)
 
     private_nh.getParam("simulation_flag", simulation_flag);
     private_nh.getParam("nav_acc_rad_xy", nav_acc_rad_xy);
-    private_nh.getParam("nav_acc_yaw_deg", nav_acc_yaw);
-
-    nav_acc_yaw = nav_acc_yaw/180.0f*M_PI;
 
     //the setpoint publishing rate MUST be faster than 2Hz
     ros::Rate rate(20.0);
@@ -156,8 +131,11 @@ int main(int argc, char **argv)
 
 
     /*service commands*/
-    mavros_msgs::SetMode offb_set_mode;
-    offb_set_mode.request.custom_mode = "OFFBOARD";
+    mavros_msgs::SetMode offboard_set_mode;
+    offboard_set_mode.request.custom_mode = "OFFBOARD";
+
+    mavros_msgs::SetMode stabilized_set_mode;
+    stabilized_set_mode.request.custom_mode = "STABILIZED";
 
     mavros_msgs::CommandBool arm_cmd;
     arm_cmd.request.value = true;
@@ -165,18 +143,6 @@ int main(int argc, char **argv)
     mavros_msgs::CommandBool disarm_cmd;
     disarm_cmd.request.value = false;
 
-    //forward/backward driving command
-    mavros_msgs::CommandLong set_forward_driving_cmd;
-    set_forward_driving_cmd.request.command = (uint16_t)mavlink::common::MAV_CMD::SET_ROVER_FORWARD_REVERSE_DRIVING;
-    set_forward_driving_cmd.request.confirmation = 0;
-    set_forward_driving_cmd.request.param1 = 1.0f;
-
-    mavros_msgs::CommandLong set_backward_driving_cmd;
-    set_backward_driving_cmd.request.command = (uint16_t)mavlink::common::MAV_CMD::SET_ROVER_FORWARD_REVERSE_DRIVING;
-    set_backward_driving_cmd.request.confirmation = 0;
-    set_backward_driving_cmd.request.param1 = 0.0f;
-
-    bool flag_forward_driving = true;
 
     ros::Time last_request = ros::Time::now();
 
@@ -190,11 +156,14 @@ int main(int argc, char **argv)
                 //set offboard mode, then arm the vehicle
                 if( current_state.mode != "OFFBOARD" &&
                     (ros::Time::now() - last_request > ros::Duration(1.0))){
-                    if( set_mode_client.call(offb_set_mode) &&
-                        offb_set_mode.response.mode_sent){
+
+                    if( set_mode_client.call(offboard_set_mode) &&
+                        offboard_set_mode.response.mode_sent){
                         ROS_INFO("Offboard mode enabled");
                     }
+
                     last_request = ros::Time::now();
+
                 } else {
                     if( !current_state.armed &&
                         (ros::Time::now() - last_request > ros::Duration(1.0))){
@@ -212,10 +181,10 @@ int main(int argc, char **argv)
 
         if (!_flag_mission_completed){
 
-        switch (_mission_phase){
+            switch (_mission_phase){
 
-        /* publish local position setpoint for rover maneuvering*/
-            case ROVER_MISSION_PHASE::POS_PHASE:{
+            /* publish local position setpoint for rover maneuvering*/
+                case ROVER_MISSION_PHASE::POS_PHASE:{
 
                     ROS_INFO_ONCE("Starting position guidance phase");
 
@@ -223,149 +192,82 @@ int main(int argc, char **argv)
 
                     pose = waypoints.at(current_wpindex);
 
-                    ROS_INFO_THROTTLE(1.5f, "Rover: go to position %5.3f, %5.3f, %5.3f \n",(double)pose.pose.position.x, (double)pose.pose.position.y,
-                                      (double)pose.pose.position.z);
+                    ROS_INFO_THROTTLE(2.0f, "Rover: go to position %5.3f, %5.3f, %5.3f \n",(double)pose.pose.position.x, (double)pose.pose.position.y,
+                                        (double)pose.pose.position.z);
 
-                    local_pos_pub.publish(pose);
+                    local_pos_sp_pub.publish(pose);
+
                     updateWaypointIndex();
 
-                break;
-            }
-
-         /* publish local velocity setpoint for rover maneuvering*/
-        case ROVER_MISSION_PHASE::VEL_PHASE:{
-
-                ROS_INFO_ONCE("Starting velocity guidance phase");
-
-                //The locl velocity setpoint is defined in the ENU frame, and will be converted to body frame in the autopilot for maneuvering
-                geometry_msgs::TwistStamped  vel_cmd;
-                vel_cmd.twist.linear.x = 0.5f;
-                vel_cmd.twist.linear.y = 0.5f;
-                vel_cmd.twist.linear.z = 0.0f;
-
-                ROS_INFO_THROTTLE(1.5f, "Rover: track velocity setpoint %5.3f, %5.3f, %5.3f \n",(double)vel_cmd.twist.linear.x, (double)vel_cmd.twist.linear.y,
-                                  (double)vel_cmd.twist.linear.z);
-
-                local_vel_pub.publish(vel_cmd);
-
-                //phase transition after a certain time
-                if ( ros::Time::now() - _phase_entry_timestamp > ros::Duration(6.0)){
-                    _mission_phase = ROVER_MISSION_PHASE::ATTITUDE_PHASE;
-                    _phase_entry_timestamp = ros::Time::now();
+                    break;
                 }
 
-                break;
 
-        }
+            /* publish twist command for rover maneuvering*/
+                case ROVER_MISSION_PHASE::TWIST_CONTROL_PHASE:{
 
-         /* publish attitude setpoint for rover maneuvering*/
-        case ROVER_MISSION_PHASE::ATTITUDE_PHASE:{
-                ROS_INFO_ONCE("Starting attitude maneuvering phase");
+                    ROS_INFO_ONCE("Starting twist control phase");
 
-                //we need to construct both attitude and thrust setpoints
-                //we construct desired attitude from yaw setpoint
-                geometry_msgs::PoseStamped pose;
+                    geometry_msgs::Twist twist_cmd;
 
-                float yaw_sp = M_PI/2.0f;
-                tf::Quaternion q = tf::createQuaternionFromYaw(yaw_sp); //yaw unit: radius
+                    twist_cmd.linear.x = 1.0;
+                    twist_cmd.linear.y = 0.0;
+                    twist_cmd.linear.z = 0.0;
+                    twist_cmd.angular.x = 0.0;
+                    twist_cmd.angular.y = 0.0;
+                    twist_cmd.angular.z = 0.5; //about 30deg/s
 
-                tf::quaternionTFToMsg(q, pose.pose.orientation);
+                    nav_vel_cmd_pub.publish(twist_cmd);
 
-                att_sp_pub.publish(pose);
-
-                mavros_msgs::Thrust thrust_sp;
-                thrust_sp.thrust = 0.3f;
-                thrust_sp_pub.publish(thrust_sp);
-
-                ROS_INFO_THROTTLE(1.5f, "Rover: go for attitude yaw %5.3f, throttle %5.3f \n",(double)yaw_sp, (double)thrust_sp.thrust);
-
-                //phase transition after a certain time
-                if ( ros::Time::now() - _phase_entry_timestamp > ros::Duration(6.0)){
-                    _mission_phase = ROVER_MISSION_PHASE::ACT_CONTROL_PHASE;
-                    _phase_entry_timestamp = ros::Time::now();
-                }
-
-            break;
-        }
-
-         /* publish direct actuator control for rover maneuvering*/
-        case ROVER_MISSION_PHASE::ACT_CONTROL_PHASE:{
-                ROS_INFO_ONCE("Starting direct actuator control phase");
-
-                mavros_msgs::ActuatorControl act_control;
-
-                act_control.group_mix = 0;
-                act_control.flag_rover_mode = 1;//enable direct actuator control in rover
-                act_control.controls[mavros_msgs::ActuatorControl::ROVER_YAW_CHANNEL_CONTROL_INDEX] = 0.4f;
-                act_control.controls[mavros_msgs::ActuatorControl::ROVER_THROTTLE_CHANNEL_CONTROL_INDEX] = 0.3f;
-
-                act_controls_pub.publish(act_control);
-
-                ROS_INFO_THROTTLE(1.5f, "Rover: direct actuator control with steering servo %5.3f, throttle %5.3f  \n",
-                                  (double)act_control.controls[mavros_msgs::ActuatorControl::ROVER_YAW_CHANNEL_CONTROL_INDEX],
-                        (double)act_control.controls[mavros_msgs::ActuatorControl::ROVER_THROTTLE_CHANNEL_CONTROL_INDEX]);
-
-
-                //we switch to backward driving after 5s
-                if ( ros::Time::now() - _phase_entry_timestamp > ros::Duration(5.0)){
-
-                    if (flag_forward_driving && (ros::Time::now() - last_request > ros::Duration(1.0))){
-
-                        if( command_long_client.call(set_backward_driving_cmd) && set_backward_driving_cmd.response.success){
-
-                            ROS_INFO("Driving direction command is sent!");
-
-                            flag_forward_driving = false;
-
-                        }
-
-                        last_request = ros::Time::now();
-
+                    //phase transition after a certain time
+                    if ( ros::Time::now() - _phase_entry_timestamp > ros::Duration(6.0)){
+                        _flag_mission_completed = true;
+                        ROS_INFO("Mission completed");
                     }
 
-
+                    break;
                 }
 
 
+        default:
 
-                //phase transition after a certain time
-                if ( ros::Time::now() - _phase_entry_timestamp > ros::Duration(10.0)){
-                    _flag_mission_completed = true;
-                    ROS_INFO("Mission completed");
-                }
+                ROS_INFO("Unsupported mission phases");
+                break;
 
-            break;
-        }
-
-
-      default:
-
-            ROS_INFO("Unsupported mission phases");
-            break;
-
-
-        }
-
-        }
-
-
-
-
-
-
-        /*disarm when the mission is completed*/
-        if (_flag_mission_completed){
-
-            if( current_state.armed &&
-                (ros::Time::now() - last_request > ros::Duration(5.0))){
-
-                if( arming_client.call(disarm_cmd) && arm_cmd.response.success){
-
-                    ROS_INFO("Vehicle disarmed");
-                }
-                last_request = ros::Time::now();
 
             }
+
+        }
+
+        /*switch to stabilized mode and disarm when the mission is completed*/
+        if (_flag_mission_completed){
+
+            if( current_state.mode != "STABILIZED" &&
+                    (ros::Time::now() - last_request > ros::Duration(1.0))){
+
+                    if( set_mode_client.call(stabilized_set_mode) &&
+                        stabilized_set_mode.response.mode_sent){
+                        ROS_INFO("Stabilized mode enabled");
+                    }
+                    
+                    last_request = ros::Time::now();
+
+            }  else {
+
+                if( current_state.armed &&
+                    (ros::Time::now() - last_request > ros::Duration(5.0))){
+
+                    if( arming_client.call(disarm_cmd) && arm_cmd.response.success){
+
+                        ROS_INFO("Vehicle disarmed");
+                    }
+                    last_request = ros::Time::now();
+
+                }
+
+            }
+
+
 
         }
 
@@ -436,7 +338,7 @@ void updateWaypointIndex()
         else{
             _flag_last_wp_reached = true;
 
-            _mission_phase = ROVER_MISSION_PHASE::VEL_PHASE;
+            _mission_phase = ROVER_MISSION_PHASE::TWIST_CONTROL_PHASE;
 
             _phase_entry_timestamp = ros::Time::now();
             ROS_INFO("The waypoint mission in POS_PHASE is finished, switch to VEL_PHASE");

@@ -13,6 +13,7 @@ find_package(catkin REQUIRED COMPONENTS
   mavros
   mavros_msgs
   geometry_msgs
+  pursuit_msgs
 )
 
 find_package(mavlink)
